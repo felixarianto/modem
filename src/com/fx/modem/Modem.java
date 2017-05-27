@@ -24,8 +24,8 @@ import lib.fx.logger.Log;
  */
 public class Modem extends Thread {
     
-    private static final ConcurrentHashMap<String, Modem> PORT_USAGE_MAP = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<String, ArrayList<Modem>> MODEM_MAP = new ConcurrentHashMap<>();
+    protected static final ConcurrentHashMap<String, Modem> PORT_USAGE_MAP = new ConcurrentHashMap<>();
+    protected static final ConcurrentHashMap<String, ArrayList<Modem>> MODEM_MAP = new ConcurrentHashMap<>();
     public static Modem getAtPort(String p_port) {
         return PORT_USAGE_MAP.get(p_port);
     }
@@ -33,7 +33,7 @@ public class Modem extends Thread {
         return MODEM_MAP.get(p_provider_code);
     }
 
-    static Modem get(String p_provider, int p_amount) {
+    public static Modem get(String p_provider, int p_amount) {
         Modem m = null;
         try {
             ArrayList<Modem> list = getAtProvider(p_provider);
@@ -57,13 +57,13 @@ public class Modem extends Thread {
         return m;
     }
 
-    static void unlock(Modem modem, String metalog) {
+    public static void unlock(Modem modem, String metalog) {
         if (modem != null) {
             modem.unlock(metalog);
         }
     }
 
-    static void lock(Modem modem, String metalog) {
+    public static void lock(Modem modem, String metalog) {
         if (modem != null) {
             modem.lock(metalog);
         }
@@ -97,11 +97,12 @@ public class Modem extends Thread {
     public static final int RATE_57600 = 57600;
     public static final int RATE_115200 = 115200;
     public static final int RATE_128000 = 128000;
+    public static final int RATE_460800 = 460800;
         
-    private boolean mBusy;
+    protected boolean mBusy;
     protected String mMetalog;
-    private final String mPort;
-    private final int    mRate;
+    protected final String mPort;
+    protected final int    mRate;
     public Modem(String pTag, String pPort, int pBaudRate) {
         mPort = pPort;
         mRate = pBaudRate;
@@ -121,6 +122,9 @@ public class Modem extends Thread {
     protected void d(String pMetalog, String pMessage) {
         Log.d(getName(), pMetalog, pMessage.replaceAll("\r", "/r").replaceAll("\n", "/n"));
     }
+    protected void w(String pMetalog, String pMessage) {
+        Log.w(getName(), pMetalog, pMessage.replaceAll("\r", "/r").replaceAll("\n", "/n"));
+    }
     protected void e(String pMetalog, String pMessage) {
         Log.e(getName(), pMetalog, pMessage.replaceAll("\r", "/r").replaceAll("\n", "/n"));
     }
@@ -128,18 +132,29 @@ public class Modem extends Thread {
         Log.e(getName(), pMetalog, e);
     }
     /*
-     * RUN
+     * RUNNABLE
      */
+    public interface Runnable {
+        public void run(Modem p_modem);
+    }
+    public void setRunnable(Runnable p_runnable) {
+        mRunnable = p_runnable;
+        start();
+    }
+    private Runnable mRunnable;
     @Override
     public void run() {
+        if (mRunnable != null) {
+            mRunnable.run(this);
+        }
     }
     /*
      * CONNECTOR
      */
-    private boolean mConnected = false;
-    private SerialPort mSerialPort;
-    private OutputStream osOutputStream;
-    private InputStream isInputStream;
+    protected boolean mConnected = false;
+    protected SerialPort mSerialPort;
+    protected OutputStream osOutputStream;
+    protected InputStream isInputStream;
     public boolean portOpen() {
         mBusy = true;
         try {
@@ -164,10 +179,12 @@ public class Modem extends Thread {
                     osOutputStream = mSerialPort.getOutputStream();
                 if      (!sendOK("ATZ", 1000))       {} // Reset Modem
                 else if (!sendOK("AT+CMGF=1", 1000)) {} // Set Format
+                else if (!sendOK("AT+CPMS=\"SM\",\"SM\",\"SM\"")) {} // Set Storage
                 else {
                     mConnected = true;
                     i(mMetalog, "Connected");
                 }
+                
             }
         }
         catch (Exception | Error e) {
@@ -202,7 +219,7 @@ public class Modem extends Thread {
     /*
      *
      */
-    protected String onReadSMS(long pTimeout) {
+    public String readSMS(long pTimeout) {
         String read = null;
         long t0 = System.currentTimeMillis();
         while (System.currentTimeMillis() - t0 < pTimeout) {            
@@ -226,7 +243,56 @@ public class Modem extends Thread {
         }
         return read;
     }
-    
+    public String getIncomingSMS(long p_timeout) {
+        String r = null;
+        try {
+            String read = onReadEnds("+CMTI:", new String[]{""}, p_timeout);
+            if (read == null) {
+                return r;
+            }
+            String[] data = read.split(",");
+            if (data.length != 2) {
+                w(mMetalog, "Bad incoming: " + read);
+            }
+            else {
+                r = data[1];
+            }
+        }
+        catch (Exception e) {
+            e(mMetalog, e);
+        }
+        return r;
+    }
+    public ArrayList<String[]> getSMS_UNREAD(long pTimeout) {
+        if (!send("AT+CMGL=\"REC UNREAD\"")) {
+            return new ArrayList<>();
+        }
+        return smsparse(readSMS(pTimeout));
+    }
+    public String[] readSMS(String sms_id, long pTimeout) {
+        long t0 = System.currentTimeMillis();
+        while (System.currentTimeMillis() - t0 < pTimeout) {  
+            if (!send("AT+CMGR=" + sms_id)) {
+                continue;
+            }
+            ArrayList<String[]> list = smsparse(readSMS(pTimeout));
+            if (list.isEmpty()) {
+                continue;
+            } 
+            if (list.size() == 1) {
+                return list.remove(0);
+            }
+            for (String[] sms : list) {
+                if (sms[0].equals(sms_id)) {
+                    return sms;
+                }
+            }
+        }
+        return null;
+    }
+    /*
+     *
+     */
     private String onReadSTIN(long pTimeout) {
         String read = null;
         long t0 = System.currentTimeMillis();
@@ -246,7 +312,7 @@ public class Modem extends Thread {
     protected boolean deleteSMS(String p_id) {
         return sendOK("AT+CMGD=" + p_id, 3000);
     }
-    protected ArrayList<String[]> deleteAllSMS() {
+    public ArrayList<String[]> deleteAllSMS() {
         ArrayList<String[]> r = new ArrayList<>();
         onSkipReader();
         long timeout = 30000;
@@ -255,7 +321,7 @@ public class Modem extends Thread {
             if (!send("AT+CMGL=\"ALL\"")) {
                 continue;
             }
-            String sms = onReadSMS(timeout);
+            String sms = readSMS(timeout);
             ArrayList<String[]> list = smsparse(sms);
             for (String[] m : list) {
                 sendOK("AT+CMGD=" + m[0], 5000);
@@ -270,7 +336,7 @@ public class Modem extends Thread {
         }
         return r;
     }
-    private String onReadEnds(String pPrefix, String pEnds, long pTimeout) {
+    protected String onReadEnds(String pPrefix, String pEnds, long pTimeout) {
         return onReadEnds(pPrefix, new String[]{pEnds}, pTimeout);
     }
     private String onReadEnds(String pPrefix, String[] pEnds, long pTimeout) {
@@ -381,21 +447,36 @@ public class Modem extends Thread {
         String umb = null; 
         try {
             umb = onReadEnds("+CUSD:", new String[]{",15", ",0", "+CUSD: 4"}, pTimeout);
-            if (umb != null && umb.startsWith("+CUSD: 4")) {
-                umb = null;
+            if (umb == null || umb.startsWith("+CUSD: 4")) {
+                return null;
+            }
+            int idx = umb.indexOf("\"");
+            if (idx > 0) {
+                umb = umb.substring(idx);
             }
         } catch (Exception e) {
             e(mMetalog, e);
         }
-        return umb;
+        return umb(umb);
     }
     public boolean sendSMS(String pNumber, String pText, long pTimeout) {
         boolean r = false;
         onSkipReader();
-        if (send("AT+CMGS=\"" + pNumber + "\"" + '\r' + pText + "\u001A")) {
-            String read = onReadEnds(">", "OK", pTimeout);
-            r = read.contains("CMGS:");
+        if (!send("AT+CMGS=\"" + pNumber + "\"" + "\r\n")) {
+            return r;
         }
+        String read = onReadEnds(">", ">", 500);
+        if (read == null) {
+            return r;
+        }
+        if (!send(pText + "\u001A")) {
+            return r;
+        }
+        read = onReadEnds("+CMGS", "OK", pTimeout);
+        if (read == null) {
+            return r;
+        }
+        r = read.replace("+CMGS: ", "").replace("OK", "").trim().matches("[0-9]");
         return r;
     }
     public boolean sendSTK(String pCommand, long pTimeout) {
@@ -478,7 +559,7 @@ public class Modem extends Thread {
     public ArrayList<String[]> smsparse(String pData) {
         ArrayList<String[]> list = new ArrayList<>();
         try {
-            String[] data = pData.split("\\+CMGL: ");
+            String[] data = pData.split("\\+CMG");
             for (String sms : data) {
                 if (sms.length() > 0) {
                     String[] a = sms.split("\n", 2);
@@ -543,7 +624,7 @@ public class Modem extends Thread {
         }
         return false;
     }
-    private String mICCID = null;
+    protected String mICCID = null;
     public String getICCID() {
         return mICCID;
     }
@@ -569,7 +650,7 @@ public class Modem extends Thread {
         public static final String SUCCESS = "Success";
         public static final String FAILED  = "Failed";
         public static final String PENDING = "Pending";
-        protected void status(String p_status) {
+        public void status(String p_status) {
             put("STATUS", SUCCESS);
         }
         public String getStatus() {
@@ -631,7 +712,7 @@ public class Modem extends Thread {
             String desc = "";
             p :{
                 if (cmd.svc_response_mode.equalsIgnoreCase("umb")) {
-                    String response = umb(readUMB(cmd.svc_request_timeout));
+                    String response = readUMB(cmd.svc_request_timeout);
                     HashMap<String, String> m = parse(cmd.svc_response_format, response);
                     if (m != null) {
                         output.putAll(m);
@@ -644,6 +725,7 @@ public class Modem extends Thread {
                         output.status(Output.FAILED);
                         break p;
                     }
+                    desc += response;
                 }
                 else if (cmd.svc_response_mode.equalsIgnoreCase("sms")) {
                     boolean rec = true;
@@ -656,12 +738,13 @@ public class Modem extends Thread {
                                 break p;
                             }
                         }
-                        String sms   = onReadSMS(cmd.svc_request_timeout);
-                               desc += sms;
+                        delay(1000);
+                        String sms   = readSMS(cmd.svc_request_timeout);
                         ArrayList<String[]> list = smsparse(sms);
                         for (String[] m : list) {
+                            desc += m[2];
                             if      (m == null) {}
-                            else if (!cmd.svc_response_source.contains(mdn(m[1]).toUpperCase())) {}
+                            else if (!cmd.svc_response_source.contains(sourceFormat(m[1]).toUpperCase())) {}
                             else {
                                 String txt = m[2];
                                 HashMap<String, String> map = parse(cmd.svc_response_format, txt);
@@ -735,6 +818,7 @@ public class Modem extends Thread {
     }
     public final Command COMMAND = new Command();
     public boolean setCommand() {
+        String[] sources;
         ArrayList<Object[]> records = DB.getRecords("SELECT SERVICE_CODE, REQ_MODE, REQ_FORMAT, REQ_SOURCE, RSP_MODE"
             + ", RSP_KEY_FAILED, RSP_KEY_SUCCESS, RSP_FORMAT, RSP_SOURCE, TIMEOUT " 
             + " FROM SERVICE where EC_DATE > NOW() AND PROVIDER_ID='" + mProvider + "'");
@@ -747,7 +831,10 @@ public class Modem extends Thread {
             cmd.svc_response_keys_failed  = record[5] + "";
             cmd.svc_response_keys_success = record[6] + "";
             cmd.svc_response_format       = record[7] + "";
-            cmd.svc_response_source.addAll(Arrays.asList((record[8] + "").split(",")));
+            sources = (record[8] + "").split(",");
+            for (String source : sources) {
+                cmd.svc_response_source.add(sourceFormat(source));
+            }
             COMMAND.put(cmd.service_code, cmd);
         }
         return !COMMAND.isEmpty();
@@ -760,7 +847,7 @@ public class Modem extends Thread {
     public boolean inquiryBalance() {
         BALANCE.clear();
         HashMap<String, String> param = new HashMap<>();
-        HashMap<String, String> output;
+        HashMap<String, String> output= null;
         Set<String> keys = COMMAND.keySet();
         for (String key : keys) {
             if (!key.startsWith("SALDO")){
@@ -777,17 +864,25 @@ public class Modem extends Thread {
             if (cmd.svc_request_mode == null || cmd.svc_request_mode.equals("")) {
                 continue;
             }
+            /**
+             * Retry checking balance 
+             */
             for (int i = 1; i < 5; i++) {
-                if (exec(mMetalog, cmd, param)) {
-                    break;
+                if (!exec(mMetalog, cmd, param)) {
+                    continue;
                 }
                 try {Thread.sleep(3000 * i);} catch (Exception e){}
+                output = getOutput(mMetalog, cmd, param );
+                if (output.isEmpty()) {
+                    continue;
+                }
+                break;
             }
-            output = getOutput(mMetalog, cmd, param );
-            if (output.isEmpty()) {
-                d(mMetalog, "Execution Empty Result " + cmd.toString(param));
+            if (output == null || output.isEmpty()) {
+                d(mMetalog, "Execution empty result " + cmd.toString(param));
                 continue;
             }
+            i(mMetalog, "Execution result " + output.toString());
             Set<String> output_keys = output.keySet();
             for (String sKey : output_keys) {
                 try {
@@ -795,9 +890,9 @@ public class Modem extends Thread {
                         BALANCE.put(sKey.toUpperCase().replace("U", ""), Double.valueOf(output.get(sKey)));
                     }
                     else if(sKey.toUpperCase().startsWith("A")) {
-                        double amount    = Double.valueOf(sKey.toUpperCase().replace("A", ""));
-                        Double avaliable = Double.valueOf(output.get(sKey)) / amount;
-                        BALANCE.put(amount + "", avaliable);
+                        Double amount    = Double.valueOf(sKey.toUpperCase().replace("A", ""));
+                        Double avaliable = Double.valueOf(output.get(sKey)) / (amount * 1000);
+                        BALANCE.put(amount.longValue() + "", avaliable);
                     }
                 }
                 catch (Exception e) {
@@ -905,7 +1000,7 @@ public class Modem extends Thread {
         if (pData.trim().endsWith("310") || pData.trim().endsWith("10")) {//Sim Card Not Found
         }
     }
-    private String mdn(String pValue) {
+    private String sourceFormat(String pValue) {
         try {
             if (pValue.startsWith("+62")) {
                 pValue = pValue.substring(3);

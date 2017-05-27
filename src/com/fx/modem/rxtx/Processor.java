@@ -3,41 +3,58 @@
  * To change this template file, choose Tools | Templates
  * and open the template in the editor.
  */
-package com.fx.modem;
+package com.fx.modem.rxtx;
 
-import com.fx.modem.Modem.Output;
-import com.fx.modem.db.Pulsa;
+import com.fx.modem.Cmd;
+import com.fx.modem.Modem;
 import com.fx.modem.balance.BalanceDB;
+import com.fx.modem.db.Pulsa;
 import com.fx.modem.db.TransHistory;
 import com.fx.modem.db.User;
 import com.fx.modem.properties.Prop;
-import com.fx.modem.rx.IncomingSMS;
-import com.fx.modem.rx.OutgoingSMS;
 import java.sql.Connection;
 import java.util.HashMap;
+import java.util.concurrent.TimeUnit;
 import lib.fx.db.DB;
-import lib.fx.util.MdnUtil;
 import lib.fx.logger.Log;
+import lib.fx.thread.Task;
+import lib.fx.util.MdnUtil;
 
 /**
  *
  * @author febri
  */
-public class Executor {
-    private static final String TAG = "Executor"; 
+public class Processor extends Task {
     
-    public static void start() {
-        new Thread() {
-            @Override
-            public void run() {
-                while (true) {                    
-                    String[] sms = IncomingSMS.get();
-                    if (sms != null) {
-                        exec(sms[0], sms[1]);
-                    }
-                }
+    private final static String TAG = "Processor";
+
+    private long mProcessId = System.currentTimeMillis();
+    @Override
+    protected void onRunning() {
+        String metalog = (mProcessId++) + ""; 
+        try {
+            Object[] incoming = Queue.INCOMING.poll(1, TimeUnit.MINUTES);
+            String source  = (String) incoming[0]; 
+            String message = (String) incoming[1]; 
+            long   timeout = (long)   incoming[2];
+            long   puttime = (long)   incoming[3];
+            long   curtime = System.currentTimeMillis(); 
+                   metalog += ":" + source;
+            if (curtime - puttime > timeout) {
+                w(metalog, "[T1 TIMEOUT] " + message);
+                return;
             }
-        }.start();
+            i(metalog, "[T1] " + message);
+            String exec = exec(source, message);
+            i(metalog, "[T4] " + (curtime - System.currentTimeMillis()) + "ms " + message + "  " + exec);
+        }
+        catch (InterruptedException ex) {
+            e(metalog, "Interupted");
+        }
+    }
+    
+    private static void outgoing(String p_userid, String p_message) {
+        
     }
     
     public static String exec(String p_user_id, String p_request) {
@@ -76,7 +93,7 @@ public class Executor {
     private static String register(String p_user_id, String p_pin, String p_phone, String p_new_pin, String p_name, String p_address) {
         String error = null;
         if (!validPin(p_user_id, p_pin)) {
-            OutgoingSMS.add(p_user_id, error = "Gagal mendaftarkan " + p_phone + "(" + p_name + "). PIN anda salah");
+            outgoing(p_user_id, error = "Gagal mendaftarkan " + p_phone + "(" + p_name + "). PIN anda salah");
             return error;
         }
         Connection conn = DB.getConnection(TAG);
@@ -88,14 +105,14 @@ public class Executor {
             new_user.address = p_address;
             int insert = User.insert(conn, new_user);
             if (insert <= 0) {
-                OutgoingSMS.add(p_user_id, error = "Gagal mendaftarkan " + p_phone + ". Nomor sudah terpakai");
+                outgoing(p_user_id, error = "Gagal mendaftarkan " + p_phone + ". Nomor sudah terpakai");
                 DB.rollback(conn);
                 return error;
             }
             User.put(new_user);
             DB.commit(conn);
-            OutgoingSMS.add(p_user_id, "Berhasil mendaftarkan " + p_phone + " sebagai "+ p_name);
-            OutgoingSMS.add(p_phone, "Selamat datang sebagai Agen Pulsa " + Prop.get(Prop.ORG_NAME, "") + " PIN: " + p_new_pin);
+            outgoing(p_user_id, "Berhasil mendaftarkan " + p_phone + " sebagai "+ p_name);
+            outgoing(p_phone, "Selamat datang sebagai Agen Pulsa " + Prop.get(Prop.ORG_NAME, "") + " PIN: " + p_new_pin);
         }
         catch (Exception e) {
             Log.e(TAG, e);
@@ -116,7 +133,7 @@ public class Executor {
     private static String topup(String p_user_id, String p_pin, String p_b_number, String p_nominal_code, String p_command) {
         String result = null;
         if (!validPin(p_user_id, p_pin)) {
-            OutgoingSMS.add(p_user_id, result = "Gagal isi " + p_b_number + ". PIN anda salah");
+            outgoing(p_user_id, result = "Gagal isi " + p_b_number + ". PIN anda salah");
             return result;
         }
         TransHistory th = new TransHistory();
@@ -129,7 +146,7 @@ public class Executor {
             Pulsa pulsa = Pulsa.get(p_nominal_code);
             if (pulsa == null) {
                 th.status = "Kode " + p_nominal_code + " tidak diketahui";
-                OutgoingSMS.add(p_user_id, result = "Gagal isi ke " + p_b_number + ". " + p_nominal_code + " tidak diketahui");
+                outgoing(p_user_id, result = "Gagal isi ke " + p_b_number + ". " + p_nominal_code + " tidak diketahui");
                 return result;
             }
             th.bnumber = p_b_number;
@@ -140,7 +157,7 @@ public class Executor {
             if (modem == null) {
                 th.status = "Modem " + pulsa.provider + " tidak tersedia";
                 Log.e(TAG, metalog, "Modem not alvaliable provider: " + pulsa.provider + " amount: " + pulsa.amount);
-                OutgoingSMS.add(p_user_id, result = "Gagal isi ke " + p_b_number + " sistem sedang sibuk");
+                outgoing(p_user_id, result = "Gagal isi ke " + p_b_number + " sistem sedang sibuk");
                 return result;
             }
             Modem.lock(modem, metalog);
@@ -148,7 +165,7 @@ public class Executor {
             if (conn == null) {
                 th.status = "DB Connection NULL";
                 Log.e(TAG, metalog, "DB Connection Not Found");
-                OutgoingSMS.add(p_user_id, result = "Gagal isi ke " + p_b_number + " sistem sedang sibuk");
+                outgoing(p_user_id, result = "Gagal isi ke " + p_b_number + " sistem sedang sibuk");
                 return result;
             }
             th.anumber     = modem.getICCID();
@@ -156,7 +173,7 @@ public class Executor {
             boolean balance_dec = BalanceDB.balanceUpdate(conn, metalog, p_user_id, -pulsa.price, th.trans_id);
             if (!balance_dec) {
                 th.status = "Saldo tidak cukup";
-                OutgoingSMS.add(p_user_id, result = "Gagal isi " + pulsa.amount + " ke " + p_b_number + " Saldo tidak cukup. ID." + th.trans_id);
+                outgoing(p_user_id, result = "Gagal isi " + pulsa.amount + " ke " + p_b_number + " Saldo tidak cukup. ID." + th.trans_id);
                 return result;
             }
             boolean balance_add = BalanceDB.balanceUpdate(conn, metalog, "ADMIN", pulsa.price, th.trans_id);
@@ -177,23 +194,23 @@ public class Executor {
                 Log.w(TAG, metalog, result = "Failed execution command " + cmd.toString(param));
                 return result;
             }
-            Output output = modem.getOutput(metalog, cmd, param);
+            Modem.Output output = modem.getOutput(metalog, cmd, param);
             if (output.isEmpty()) {
                 double balance_before = modem.BALANCE.get(pulsa.amount + "");
                 if (!modem.inquiryBalance()) {
-                    output.status(Output.PENDING);
+                    output.status(Modem.Output.PENDING);
                 }
                 else {
                     double balance_after = modem.BALANCE.get(pulsa.amount + "");
                     double selisih       = balance_before - balance_after;
                     if (selisih == 0) {
-                        output.status(Output.FAILED);
+                        output.status(Modem.Output.FAILED);
                     }
                     else if (selisih == 1) {
-                        output.status(Output.SUCCESS);
+                        output.status(Modem.Output.SUCCESS);
                     }
                     else {
-                        output.status(Output.PENDING);
+                        output.status(Modem.Output.PENDING);
                     }
                 }
             }
@@ -209,7 +226,7 @@ public class Executor {
                 result    = "Gagal isi " + pulsa.amount + " ke " + p_b_number + " silahkan coba beberapa saat lagi. ID." + th.trans_id;
                 th.status = output.getStatus();
                 th.description = output.getOrDefault("DESC", "");
-                OutgoingSMS.add(p_user_id, result);
+                outgoing(p_user_id, result);
                 Log.w(TAG, metalog, "Failed output " + modem.getICCID() + " >> " + p_b_number + " : " + p_nominal_code);
             }
             else if (output.isPending()) {
@@ -217,7 +234,7 @@ public class Executor {
                 result    = "Transaksi isi " + pulsa.amount + " ke " + p_b_number + " sedang di proses. ID." + th.trans_id;
                 th.status = output.getStatus();
                 th.description = output.getOrDefault("DESC", "");
-                OutgoingSMS.add(p_user_id, result);
+                outgoing(p_user_id, result);
                 modem.portClose();
                 Log.w(TAG, metalog, "Pending output " + modem.getICCID() + " >> " + p_b_number + " : " + p_nominal_code);
             }
@@ -237,18 +254,14 @@ public class Executor {
         finally {
             Modem.unlock(modem, metalog);
             DB.rollback(conn);
-            if (TransHistory.insert(conn, th) < 1) {
-                Log.w(TAG, metalog, "Failed insert history");
-            }
-            else {
-                DB.commit(conn);
+            if (conn != null) {
+                if (TransHistory.insert(conn, th) > 0) {
+                    DB.commit(conn);
+                }
             }
             DB.releaseConnection(conn);
         }
         return result;
-    }
-    private static void topupPending(String metalog, Modem modem, Cmd cmd, HashMap<String, String> param) {
-        
     }
     
 }

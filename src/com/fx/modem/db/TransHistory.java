@@ -30,8 +30,8 @@ public class TransHistory {
     
     public static int insert(Connection p_connection, TransHistory p_trans) {
         int insert = 0;
+        String query  = ""; 
         try {
-            String    
             query  = "insert into TRANS_HISTORY(CREATED_DATE, TRANS_ID, USER_ID, BNUMBER, AMOUNT, PRICE, ANUMBER, DESCRIPTION, COMMAND, STATUS)"
                    + " values (CURDATE(), '" + p_trans.trans_id + "','" + p_trans.user_id + "','" + p_trans.bnumber + "'"
                    + "," + p_trans.amount + "," + p_trans.price + ",'" + p_trans.anumber + "','" + p_trans.description + "'"
@@ -45,7 +45,8 @@ public class TransHistory {
             }
         }
         catch (Exception e) {
-            Log.e(TAG, e);
+            Log.w(TAG, p_trans.trans_id, "Failed " +  query);
+            Log.e(TAG, p_trans.trans_id, e);
         }
         return insert;
     }

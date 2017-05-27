@@ -5,10 +5,12 @@
  */
 package com.fx.modem.main;
 
-import com.fx.modem.SynchTask;
+import com.fx.modem.ModemSynch;
 import com.fx.modem.console.ModemConsole;
 import com.fx.modem.db.Pulsa;
 import com.fx.modem.db.User;
+import com.fx.modem.processor.IncomingProcessor;
+import com.fx.modem.processor.Queue;
 import java.io.IOException;
 import java.net.Socket;
 import java.sql.Connection;
@@ -30,13 +32,21 @@ public class Main {
         properties();
         log();
         database();
-        new SynchTask().start();
+        new ModemSynch().start();
         new Console()  .bind(9999, new BindCallback() {
             @Override
             public void onAccept(Socket p_socket) {
                 new ModemConsole(p_socket).start();
             }
         });
+//        new IncomingProcessor().start();
+//        try {
+//            Thread.sleep(10000);
+//            Queue.incoming("89524336183", "I.I10.086737833778.1111", 5000);
+//        }
+//        catch (Exception e) {
+//            e.printStackTrace();
+//        }
     }
     private static void properties() {
     }

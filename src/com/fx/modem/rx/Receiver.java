@@ -26,7 +26,7 @@ public class Receiver extends Modem {
                 if (size == 0) {
                     break p;
                 }
-                String msg = onReadSMS(30000);
+                String msg = readSMS(30000);
                 if (msg == null) {
                     break p;
                 }

@@ -5,6 +5,7 @@
  */
 package com.fx.modem.rx;
 
+import com.fx.modem.processor.Queue;
 import java.util.concurrent.LinkedBlockingDeque;
 
 /**
@@ -15,7 +16,11 @@ public class OutgoingSMS {
 
     private static final LinkedBlockingDeque<String[]> QUEUE = new LinkedBlockingDeque<>();
     public static void add(String p_target, String p_text) {
-        QUEUE.add(new String[]{p_target, p_text});
+        try {
+            Queue.outgoing(p_target, p_text, 5000);
+        }
+        catch (Exception e) {
+        }
     }
     public static String[] get() {
         return QUEUE.poll();
